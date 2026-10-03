@@ -430,6 +430,7 @@ def upsert_standalone(
     version_id: str | None = None,
     digest: str | None = None,
     requested_version: str | None = None,
+    pin_known: bool = False,
 ) -> None:
     """Add or update a standalone component (MCP, skill, hook, etc.) in the lock file.
 
@@ -463,6 +464,8 @@ def upsert_standalone(
         entry["digest"] = digest
     if requested_version:
         entry["requested_version"] = requested_version
+    if pin_known:
+        entry["pin_known"] = True
 
     def commit(registry: dict) -> tuple[bool, None]:
         standalone = _ensure_harness(registry, harness)["standalone"]

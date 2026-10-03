@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fail-closed eligibility checks for normal Pi pulls launched at startup.
+"""Fail-closed eligibility checks for normal agent pulls launched at startup.
 
 This module never installs; it is kept separate from the explicit `outdated`
 contract, which lists older versions regardless of auto-update eligibility.
@@ -70,14 +70,17 @@ def require_generated_release_lock(release: object, lock: object, *, version: st
 
 
 def pi_user_agent_candidate(item: dict, *, registry: str) -> dict[str, str]:
-    """Validate one verified comparison result without changing any files.
+    return _user_agent_candidate(item, registry=registry, harness="pi")
 
-    The shared runner repeats the release check under the policy gate;
-    normal agent pull revalidates owned files and target paths under Pi's lock.
-    A positive preflight result alone is NOT install authorization.
-    """
-    if item.get("type") != "agent" or item.get("harness") != "pi" or item.get("scope") != "user":
-        raise PreflightSkipError("Only managed Pi user-scope agents are in the first automatic rollout.")
+
+def claude_user_agent_candidate(item: dict, *, registry: str) -> dict[str, str]:
+    return _user_agent_candidate(item, registry=registry, harness="claude-code")
+
+
+def _user_agent_candidate(item: dict, *, registry: str, harness: str) -> dict[str, str]:
+    """A positive comparison alone is never installation authorization."""
+    if item.get("type") != "agent" or item.get("harness") != harness or item.get("scope") != "user":
+        raise PreflightSkipError(f"Only managed {harness} user-scope agents are eligible.")
     if (
         item.get("status") != "outdated"
         or not item.get("outdated")
@@ -100,13 +103,15 @@ def pi_user_agent_candidate(item: dict, *, registry: str) -> dict[str, str]:
     target = _identities(item["release"].get("components"), installed=False)
     if installed != target:
         raise PreflightSkipError("The release adds or removes components; review and pull it manually.")
+    if harness == "claude-code" and installed:
+        raise PreflightSkipError("Claude Code component installs need manual review; only a plain profile is eligible.")
     root = item.get("directory")
     if not isinstance(root, str) or not root:
         raise PreflightSkipError("The installation root is unknown; update manually.")
     try:
         files = install_baseline.verified_files(
             registry=registry,
-            harness="pi",
+            harness=harness,
             agent_id=item["id"],
             scope="user",
             root=root,
@@ -115,4 +120,11 @@ def pi_user_agent_candidate(item: dict, *, registry: str) -> dict[str, str]:
         )
     except install_baseline.BaselineError as error:
         raise PreflightSkipError(str(error)) from error
+    if harness == "claude-code":
+        from observal_cli import automatic_claude_plan
+
+        try:
+            automatic_claude_plan.profile(item, files)
+        except automatic_claude_plan.ClaudePlanError as error:
+            raise PreflightSkipError(str(error)) from error
     return {"current_version": current, "target_version": item["latest_version"], "verified_files": str(len(files))}

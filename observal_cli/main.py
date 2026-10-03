@@ -296,6 +296,18 @@ def startup_check(
     check_pi(cwd, session_id, notice_key)
 
 
+@app.command("_startup-apply-claude", hidden=True)
+def startup_apply_claude(
+    cwd: str = typer.Option(..., "--cwd"),
+    session_id: str = typer.Option(..., "--session-id"),
+    notice_key: str = typer.Option(..., "--notice-key"),
+) -> None:
+    """Guarded Claude Code user-profile update worker."""
+    from observal_cli.startup_update_apply import apply_claude
+
+    apply_claude(cwd, session_id, notice_key)
+
+
 @app.command("_startup-apply", hidden=True)
 def startup_apply(
     cwd: str = typer.Option(..., "--cwd"),

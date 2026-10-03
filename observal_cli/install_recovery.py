@@ -251,3 +251,45 @@ def discard(root: Path) -> None:
     if root.parent == BACKUP_DIR and root.is_dir() and not root.is_symlink():
         shutil.rmtree(root)
         _sync(BACKUP_DIR)
+
+
+def planned_matches(root: Path) -> bool:
+    """Confirm a completed normal installer produced the saved exact plan.
+
+    Unlike restore_if_safe, installed metadata is expected to have advanced.
+    Never use the newly captured baseline as evidence for target bytes: an
+    external edit between write and capture could otherwise be adopted.
+    """
+    try:
+        if root.parent != BACKUP_DIR or root.is_symlink() or root.stat().st_mode & 0o077:
+            return False
+        manifest = root / "manifest.json"
+        _regular(manifest)
+        if manifest.stat().st_size > MAX_BYTES:
+            return False
+        record = json.loads(manifest.read_text())
+        rows = record["files"]
+        if record.get("schema") != 1 or not isinstance(rows, list) or not rows:
+            return False
+        seen = set()
+        for row in rows:
+            path = Path(row["path"])
+            mode = row["target_mode"]
+            if (
+                str(path) in seen
+                or type(mode) is not int
+                or mode < 0
+                or mode & ~0o777
+                or not isinstance(row["target"], str)
+                or len(row["target"]) != 64
+            ):
+                return False
+            seen.add(str(path))
+            _regular(path)
+            if path.stat().st_size > MAX_BYTES:
+                return False
+            if _hash(path.read_bytes()) != row["target"] or stat.S_IMODE(path.lstat().st_mode) != mode:
+                return False
+        return True
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+        return False

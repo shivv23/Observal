@@ -203,12 +203,21 @@ def apply_worker_gate(registry: str, account: str, *, timeout: float = GATE_TIME
 
 @contextmanager
 def pi_install_lock(registry: str, *, timeout: float = GATE_TIMEOUT_SECONDS) -> Iterator[None]:
-    """Serialize all Pi pulls sharing profile files, including manual pulls.
+    """Serialize Pi writes across registries: their local destinations may overlap.
 
     Auto-install lock order: registry gate -> Pi install lock -> lockfile.
-    Manual pulls take only this lock, never the registry gate.
+    Manual pulls and skill installs take only this lock, never the registry gate.
     """
-    with _file_gate(f"pi-install:{normalize_server_url(registry)}", timeout=timeout):
+    normalize_server_url(registry)  # Reject an unknown registry identity.
+    with _file_gate("pi-install:all-registries", timeout=timeout):
+        yield
+
+
+@contextmanager
+def claude_install_lock(registry: str, *, timeout: float = GATE_TIMEOUT_SECONDS) -> Iterator[None]:
+    """Serialize manual and guarded Claude Code profile writes across registries."""
+    normalize_server_url(registry)
+    with _file_gate("claude-install:all-registries", timeout=timeout):
         yield
 
 

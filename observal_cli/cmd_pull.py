@@ -1256,18 +1256,19 @@ def write_install_snippet(
     return written, failed_skills
 
 
-def _serialize_pi_pull(callback):
-    """Coordinate manual Pi pulls with guarded installs across processes."""
+def _serialize_managed_pull(callback):
+    """Coordinate manual Pi/Claude Code pulls with guarded installs across processes."""
 
     @wraps(callback)
     def wrapped(*args, **kwargs):
         harness = kwargs.get("harness", args[1] if len(args) > 1 else None)
-        if harness != "pi":
+        if harness not in {"pi", "claude-code"}:
             return callback(*args, **kwargs)
-        from observal_cli.auto_update_policy import pi_install_lock
+        from observal_cli.auto_update_policy import claude_install_lock, pi_install_lock
         from observal_cli.lockfile import current_registry_url
 
-        with pi_install_lock(current_registry_url()):
+        install_lock = pi_install_lock if harness == "pi" else claude_install_lock
+        with install_lock(current_registry_url()):
             cutoff = os.environ.get("OBSERVAL_AUTO_UPDATE_NETWORK_CUTOFF")
             if os.environ.get("OBSERVAL_AUTO_UPDATE_INSTALL") == "1" and cutoff is not None:
                 with client.bounded_requests(float(cutoff)):
@@ -1279,7 +1280,7 @@ def _serialize_pi_pull(callback):
 
 def register_pull(app: typer.Typer):
     @app.command("pull")
-    @_serialize_pi_pull
+    @_serialize_managed_pull
     def pull(
         agent_id: str = typer.Argument(..., help="Agent ID, name, row number, or @alias"),
         harness: str = typer.Option(
@@ -1610,8 +1611,8 @@ def register_pull(app: typer.Typer):
 
         snippet = rewrite_observal_interpreter(snippet)
         # The startup runner uses the *normal* pull command, but must not let
-        # that command overwrite a locally edited or unowned Pi profile. The
-        # Pi pull lock is held by _serialize_pi_pull for this entire operation.
+        # it overwrite a locally edited or unowned managed profile. The harness
+        # install lock is held by _serialize_managed_pull for this operation.
         automatic_paths: list[str] | None = None
         if os.environ.get("OBSERVAL_AUTO_UPDATE_INSTALL") == "1":
             from observal_cli import (
@@ -1631,7 +1632,12 @@ def register_pull(app: typer.Typer):
                 and row["id"] == agent_uuid
                 and row["directory"] == str(target_dir)
             ]
-            if harness != "pi" or not is_user_scope or len(existing) != 1 or snippet.get("mcp_setup_commands"):
+            if (
+                harness not in {"pi", "claude-code"}
+                or not is_user_scope
+                or len(existing) != 1
+                or (harness == "pi" and snippet.get("mcp_setup_commands"))
+            ):
                 fail(
                     ErrorCategory.CONFLICT,
                     "This agent installation cannot be updated automatically.",
@@ -1689,40 +1695,55 @@ def register_pull(app: typer.Typer):
                     version=previous["current_version"],
                     lock_digest=previous["lock_digest"],
                 )
-                planned = automatic_pull_plan.plan_pi_files(snippet, previous, old_files)
+                if harness == "pi":
+                    planned = automatic_pull_plan.plan_pi_files(snippet, previous, old_files)
+                else:
+                    from observal_cli import automatic_claude_plan
+
+                    if result.get("warnings") or lock_warnings or conflict_warnings:
+                        raise automatic_claude_plan.ClaudePlanError("The release needs manual review.")
+                    planned = automatic_claude_plan.plan(snippet, previous, old_files)
                 cutoff = float(os.environ.get("OBSERVAL_AUTO_UPDATE_NETWORK_CUTOFF", "inf"))
                 marker = os.environ.get("OBSERVAL_AUTO_UPDATE_SHUTDOWN_MARKER")
                 if time.monotonic() + 15 >= cutoff or (marker and Path(marker).exists()):
-                    raise ValueError("The Pi session ended or the install admission window expired")
+                    raise ValueError("The session ended or the install admission window expired")
                 recovery = os.environ.get("OBSERVAL_AUTO_UPDATE_RECOVERY_DIR")
                 if not recovery:
                     raise ValueError("An automatic pull has no durable recovery directory")
                 client.end_startup_network_budget()  # No alarm may interrupt a disk write.
+                expected_modes = {
+                    path: install_recovery.atomic_text_mode(path.parent)
+                    if path.name == "AGENTS.md" or harness == "claude-code"
+                    else path.lstat().st_mode & 0o777
+                    for path in planned
+                }
                 install_recovery.save(
                     Path(recovery),
                     planned,
                     old_files,
                     [
                         LOCKFILE_PATH,
-                        install_baseline._path(current_registry_url(), "pi", agent_uuid, "user", str(target_dir)),
+                        install_baseline._path(current_registry_url(), harness, agent_uuid, "user", str(target_dir)),
                     ],
-                    expected_modes={
-                        path: install_recovery.atomic_text_mode(path.parent)
-                        if path.name == "AGENTS.md"
-                        else path.lstat().st_mode & 0o777
-                        for path in planned
-                    },
+                    expected_modes=expected_modes,
                 )
                 # A fully owned, identical delegation-only config is a no-op:
                 # the normal writer must not merge/replace it during startup.
-                snippet.pop("mcp_config", None)
+                if harness == "pi":
+                    snippet.pop("mcp_config", None)
+                elif snippet.get("mcp_config"):
+                    # The exact existing project-local delegation registration
+                    # was proved above. Never run its setup command or write a
+                    # shared Claude config during this profile-only update.
+                    snippet.pop("mcp_config", None)
+                    snippet.pop("mcp_setup_commands", None)
             except (OSError, ValueError, KeyError, TypeError) as error:
                 fail(
                     ErrorCategory.CONFLICT,
-                    "The managed Pi files changed or this release needs a manual pull.",
+                    "The managed files changed or this release needs a manual pull.",
                     operation="Pull agent",
                     resource=qualified_name,
-                    remediation="Inspect the saved Pi profile, then update it manually.",
+                    remediation="Inspect the saved managed profile, then update it manually.",
                     detail=repr(error),
                 )
         written, failed_skills = write_install_snippet(
@@ -1767,10 +1788,15 @@ def register_pull(app: typer.Typer):
             try:
                 if set(_files(automatic_paths)) != set(old_files):
                     raise BaselineError("The managed path set changed during installation")
+                if harness == "claude-code" and any(
+                    path.read_bytes() != raw or path.stat().st_mode & 0o777 != expected_modes[path]
+                    for path, raw in planned.items()
+                ):
+                    raise BaselineError("The written profile differs from the planned bytes or mode")
             except (BaselineError, OSError) as error:
                 fail(
                     ErrorCategory.CONFLICT,
-                    "The managed Pi file set changed while installing; the outcome needs manual inspection.",
+                    "The managed file result changed while installing; the outcome needs manual inspection.",
                     operation="Pull agent",
                     resource=qualified_name,
                     remediation="Inspect local files before retrying.",

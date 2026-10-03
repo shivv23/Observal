@@ -154,6 +154,7 @@ def apply_startup_pi_agent(
     deadline: float,
     shutdown_requested: object,
     marker: Path,
+    harness: str = "pi",
 ) -> dict:
     """Use the normal agent installer under the existing startup worker's journal.
 
@@ -162,8 +163,12 @@ def apply_startup_pi_agent(
     """
     import time
 
-    if not callable(shutdown_requested):
-        raise ValueError("A shutdown check is required")
+    if not callable(shutdown_requested) or harness not in {"pi", "claude-code"}:
+        raise ValueError("A supported harness and shutdown check are required")
+    install_lock = auto_update_policy.pi_install_lock if harness == "pi" else auto_update_policy.claude_install_lock
+    preflight = (
+        update_preflight.pi_user_agent_candidate if harness == "pi" else update_preflight.claude_user_agent_candidate
+    )
     with auto_update_policy.registry_gate(registry, timeout=max(0, min(2, deadline - time.monotonic()))):
         if (
             shutdown_requested()
@@ -172,11 +177,11 @@ def apply_startup_pi_agent(
             or auto_update_policy.active_account() != account
             or not auto_update_policy.policy_status(registry)["effective"]
         ):
-            return {"status": "skipped", "reason": "Pi closed, consent changed, or the install window expired."}
+            return {"status": "skipped", "reason": "Session closed, consent changed, or the install window expired."}
         try:
             current = [
                 row
-                for row in _entries("pi")
+                for row in _entries(harness)
                 if row["type"] == "agent"
                 and row["scope"] == "user"
                 and row["id"] == item["id"]
@@ -198,7 +203,7 @@ def apply_startup_pi_agent(
         if reason or not argv or root is None:
             return {"status": "skipped", "reason": reason or "No applicable agent installer."}
         try:
-            update_preflight.pi_user_agent_candidate(verified, registry=registry)
+            preflight(verified, registry=registry)
         except (update_preflight.PreflightSkipError, auto_update_policy.PolicyError) as error:
             return {"status": "skipped", "reason": str(error)}
         backup = install_recovery.path_for(marker)
@@ -230,12 +235,12 @@ def apply_startup_pi_agent(
             try:
                 # The child is finished. Serialize with *manual* Pi pulls too;
                 # never restore across an unrecognized edit or changed lock.
-                with auto_update_policy.pi_install_lock(registry, timeout=2):
+                with install_lock(registry, timeout=2):
                     if not install_recovery.restore_if_safe(backup):
                         return False
                     install_baseline.verified_files(
                         registry=registry,
-                        harness="pi",
+                        harness=harness,
                         agent_id=item["id"],
                         scope="user",
                         root=item["directory"],
@@ -254,13 +259,13 @@ def apply_startup_pi_agent(
             try:
                 unchanged = [
                     row
-                    for row in _entries("pi")
+                    for row in _entries(harness)
                     if _same_install(verified, row) and row.get("lock_digest") == item["lock_digest"]
                 ]
                 if len(unchanged) == 1:
                     install_baseline.verified_files(
                         registry=registry,
-                        harness="pi",
+                        harness=harness,
                         agent_id=item["id"],
                         scope="user",
                         root=item["directory"],
@@ -285,10 +290,14 @@ def apply_startup_pi_agent(
                     "status": "skipped",
                     "reason": "The installer failed; verified original managed files were restored. Update manually.",
                 }
-        if completed.returncode == 0 and _verify(verified):
+        if (
+            completed.returncode == 0
+            and _verify(verified)
+            and (harness == "pi" or install_recovery.planned_matches(backup))
+        ):
             installed = [
                 row
-                for row in _entries("pi")
+                for row in _entries(harness)
                 if row["type"] == "agent"
                 and row["id"] == item["id"]
                 and row["scope"] == "user"
@@ -299,7 +308,7 @@ def apply_startup_pi_agent(
                 try:
                     install_baseline.verified_files(
                         registry=registry,
-                        harness="pi",
+                        harness=harness,
                         agent_id=item["id"],
                         scope="user",
                         root=item["directory"],
@@ -315,7 +324,11 @@ def apply_startup_pi_agent(
                         pass  # A leftover private backup does not negate verified success.
                     return {
                         "status": "updated",
-                        "reason": "Saved Pi profile updated; re-select it with `/agent` and reload.",
+                        "reason": (
+                            "Saved Pi profile updated; re-select it with `/agent` and reload."
+                            if harness == "pi"
+                            else "Saved Claude Code profile updated; start a new session and select this agent to load it."
+                        ),
                     }
         if completed.returncode == 0 and restore_originals():
             return {
@@ -446,3 +459,134 @@ def register_update(app: typer.Typer) -> None:
                 rprint(f"  {esc(item['reason'])}")
         if not yes and items:
             rprint("[dim]Run `observal update --all --yes` to attempt eligible updates.[/dim]")
+
+
+def apply_startup_pi_skill(
+    item: dict,
+    *,
+    registry: str,
+    account: str,
+    deadline: float,
+    shutdown_requested: object,
+    marker: Path,
+) -> dict:
+    """Launch the guarded normal skill installer; verify disk and metadata after it stops."""
+    import time
+
+    from observal_cli import automatic_skill_plan
+
+    if not callable(shutdown_requested):
+        raise ValueError("A shutdown check is required")
+    with auto_update_policy.registry_gate(registry, timeout=max(0, min(2, deadline - time.monotonic()))):
+        if (
+            shutdown_requested()
+            or time.monotonic() + 15 >= deadline
+            or auto_update_policy.active_registry() != registry
+            or auto_update_policy.active_account() != account
+            or not auto_update_policy.policy_status(registry)["effective"]
+        ):
+            return {"status": "skipped", "reason": "Pi closed, consent changed, or the install window expired."}
+        try:
+            current = [row for row in _entries("pi") if _same_install(item, row)]
+            if len(current) != 1 or any(
+                current[0].get(key) != item.get(key)
+                for key in ("digest", "version_id", "local_name", "requested_version", "pin_known")
+            ):
+                raise automatic_skill_plan.SkillPlanError("The installed skill record changed.")
+            verified = installed_updates.compare(current, verify_releases=True)[0]
+            if verified.get("latest_version") != item["latest_version"]:
+                raise automatic_skill_plan.SkillPlanError("The approved target changed.")
+            file = automatic_skill_plan.verified_path(verified, registry=registry)
+            argv, reason, root = _plan(verified, project=None)
+            if reason or not argv or root is None or not verified.get("release_verified"):
+                raise automatic_skill_plan.SkillPlanError(reason or "The release could not be verified.")
+        except (CliError, OSError, ValueError, TypeError, KeyError) as error:
+            return {"status": "skipped", "reason": str(error) or "The skill needs a manual update."}
+        backup = install_recovery.path_for(marker)
+        env = os.environ.copy()
+        env.update(
+            {
+                "OBSERVAL_AUTO_UPDATE_RECOVERY_DIR": str(backup),
+                "OBSERVAL_AUTO_UPDATE_INSTALL": "1",
+                "OBSERVAL_UPDATE_EXACT_TARGET": "1",
+                "OBSERVAL_AUTO_UPDATE_EXPECTED_VERSION": item["current_version"],
+                "OBSERVAL_AUTO_UPDATE_NETWORK_CUTOFF": str(deadline - 15),
+                "OBSERVAL_AUTO_UPDATE_SHUTDOWN_MARKER": str(marker),
+            }
+        )
+        try:
+            # Never kill a child that may be inside a file write.
+            completed = subprocess.run(
+                argv,
+                cwd=root,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except (OSError, RuntimeError, ValueError):
+            return {"status": "failed", "reason": "The installer outcome is uncertain; inspect managed files."}
+
+        def old_files_verified() -> bool:
+            rows = [row for row in _entries("pi") if _same_install(item, row)]
+            if len(rows) != 1 or any(
+                rows[0].get(key) != item.get(key)
+                for key in ("digest", "version_id", "local_name", "requested_version", "pin_known")
+            ):
+                return False
+            automatic_skill_plan.verified_path(item, registry=registry)
+            return True
+
+        def restore_originals() -> bool:
+            try:
+                with auto_update_policy.pi_install_lock(registry, timeout=2):
+                    if not install_recovery.restore_if_safe(backup) or not old_files_verified():
+                        return False
+                    install_recovery.discard(backup)
+                    return True
+            except (auto_update_policy.GateBusyError, OSError, ValueError, TypeError, KeyError):
+                return False
+
+        if completed.returncode != 0:
+            try:
+                if old_files_verified():
+                    if backup.exists():
+                        install_recovery.discard(backup)
+                    return {
+                        "status": "skipped",
+                        "reason": "Installer stopped without changing the skill; update manually.",
+                    }
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+            if restore_originals():
+                return {"status": "skipped", "reason": "Verified original skill restored; update manually."}
+        if completed.returncode == 0:
+            try:
+                installed = [
+                    row
+                    for row in _entries("pi")
+                    if _same_install({**item, "current_version": verified["latest_version"]}, row)
+                ]
+                if (
+                    len(installed) == 1
+                    and installed[0].get("requested_version") is None
+                    and installed[0].get("pin_known") is True
+                    and installed[0].get("local_name") == item.get("local_name")
+                    and automatic_skill_plan.verified_path(installed[0], registry=registry) == file
+                    and install_recovery.planned_matches(backup)
+                ):
+                    if backup.exists():
+                        install_recovery.discard(backup)
+                    return {"status": "updated", "reason": "Saved Pi skill updated and verified; reload to use it."}
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+            if restore_originals():
+                return {
+                    "status": "skipped",
+                    "reason": "Unverified result; verified original skill restored. Update manually.",
+                }
+        return {
+            "status": "failed",
+            "reason": "The skill file or installed record could not be verified; inspect it and the private backup.",
+        }
