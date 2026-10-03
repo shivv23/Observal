@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 import pytest
 import typer
@@ -162,8 +160,18 @@ def _hold_apply_worker_gate(gate_dir: str, entered, release) -> None:
         release.wait(timeout=5)
 
 
-def test_apply_worker_gate_is_account_scoped_and_cross_process(isolated_policy: Path) -> None:
-    context = multiprocessing.get_context("spawn")
+def _spawn_context(monkeypatch: pytest.MonkeyPatch) -> multiprocessing.context.BaseContext:
+    # Spawn unpickles the test helper before it restores the parent's sys.path.
+    # CI runs pytest from observal-server/, so make the tests package importable.
+    root = str(Path(__file__).resolve().parents[1])
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (root, os.environ.get("PYTHONPATH")))))
+    return multiprocessing.get_context("spawn")
+
+
+def test_apply_worker_gate_is_account_scoped_and_cross_process(
+    isolated_policy: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = _spawn_context(monkeypatch)
     entered = context.Event()
     release = context.Event()
     worker = context.Process(target=_hold_apply_worker_gate, args=(str(policy.GATE_DIR), entered, release))
@@ -190,8 +198,8 @@ def test_apply_worker_gate_is_account_scoped_and_cross_process(isolated_policy: 
         worker.join(timeout=5)
 
 
-def test_gate_is_shared_across_processes(isolated_policy: Path) -> None:
-    context = multiprocessing.get_context("spawn")
+def test_gate_is_shared_across_processes(isolated_policy: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = _spawn_context(monkeypatch)
     entered = context.Event()
     release = context.Event()
     worker = context.Process(target=_hold_gate_in_process, args=(str(policy.GATE_DIR), entered, release))
