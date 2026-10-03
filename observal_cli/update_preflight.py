@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Fail-closed eligibility checks for normal agent pulls launched at startup.

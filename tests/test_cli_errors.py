@@ -479,7 +479,9 @@ def test_every_leaf_command_exposes_json_machine_output():
     walk(root)
     assert len(leaves) == 218
     assert {command.name for command in leaves if command.hidden} == {
-        "_startup-check", "_startup-apply", "_startup-apply-claude"
+        "_startup-check",
+        "_startup-apply",
+        "_startup-apply-claude",
     }
     for command in leaves:
         if command.hidden:  # Internal worker protocol, not a user-facing CLI command.

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Non-mutating Pi file-plan check shared by the normal agent pull startup mode."""

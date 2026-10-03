@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Disposable-home exact Claude Code profile updates through the normal pull."""

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """A shared backup can restore only attributed writes, never foreign edits."""

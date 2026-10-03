@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Manual pulls establish an exact baseline; legacy or dirty installs cannot auto-update."""

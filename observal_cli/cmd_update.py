@@ -1,9 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Observal Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Manual batch updates and Pi's opt-in startup runner using normal installers.
+"""Manual batch updates and guarded Pi/Claude startup runs using normal installers.
 
-The manual path is explicit and broader; the Pi startup path additionally
-requires consent, verified owned files, exact component pins and a journal.
+The manual path is explicit and broader; startup requires consent, verified
+owned files, exact release pins, and a durable outcome journal.
 """
 
 from __future__ import annotations
