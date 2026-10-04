@@ -96,6 +96,12 @@ def _save_record(registry: str, component_id: str, name: str, entry: dict) -> No
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+    if os.name != "nt":
+        directory = os.open(RECORD_DIR, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def _run(*argv: str) -> None:
