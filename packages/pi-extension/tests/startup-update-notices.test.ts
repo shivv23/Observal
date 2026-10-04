@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,6 +10,9 @@ import * as path from "node:path";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "observal-pi-updates-"));
 process.env.HOME = home;
 const dir = path.join(home, ".observal");
+// The key a real Pi worker uses for a session (the extension derives the same one).
+const piKey = (session: string) => crypto.createHash("sha256")
+  .update(["http://localhost:8000", "alice", session].join("\0")).digest("hex");
 fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify({
   server_url: "http://localhost:8000", access_token: "local-token", user_id: "alice",
@@ -79,8 +83,8 @@ assert.equal(updateMessages().length, 2, "live result delivered once after child
 assert.equal(fs.readdirSync(path.join(dir, "update-notices")).length, 0);
 assert.deepEqual(fs.readFileSync(path.join(home, "worker-starts"), "utf-8").trim().split("\n"),
   ["_startup-apply:session-a", "_startup-apply:session-b"], "start once per Pi session");
-fs.writeFileSync(path.join(dir, "update-notices", `${"c".repeat(64)}.json`), JSON.stringify({
-  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "session-a",
+fs.writeFileSync(path.join(dir, "update-notices", `${piKey("old-c")}.json`), JSON.stringify({
+  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "old-c",
   checked_at: Math.floor(Date.now() / 1000), items: [{ name: "alice/code", type: "agent",
     scope: "user", status: "updated", current_version: "1.0", latest_version: "2.0",
     changelog: "Author release notes", reason: "Installed on disk and verified. Reload Pi." }],
@@ -89,9 +93,9 @@ await handlers.get("session_start")!({ reason: "resume" }, context("session-b", 
 assert.match(messages.at(-1)!, /installed on disk/);
 assert.match(messages.at(-1)!, /re-select the saved agent with \/agent/);
 assert.match(messages.at(-1)!, /Author release notes/);
-const multiFile = path.join(dir, "update-notices", `${"e".repeat(64)}.json`);
+const multiFile = path.join(dir, "update-notices", `${piKey("old-e")}.json`);
 fs.writeFileSync(multiFile, JSON.stringify({
-  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "session-a",
+  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "old-e",
   checked_at: Math.floor(Date.now() / 1000), items: Array.from({ length: 20 }, (_, index) => ({
     name: `alice/item-${index}`, scope: "user", status: "available",
     current_version: "1.0", latest_version: "2.0", description: `notes-${index} ${"x".repeat(500)}`,
@@ -100,9 +104,9 @@ fs.writeFileSync(multiFile, JSON.stringify({
 await handlers.get("session_start")!({ reason: "resume" }, context("session-b", true));
 assert.ok(messages.some((message) => message.includes("notes-19")), "the last item must not be truncated");
 assert.equal(fs.existsSync(multiFile), false);
-const recoveryFile = path.join(dir, "update-notices", `${"d".repeat(64)}.json`);
+const recoveryFile = path.join(dir, "update-notices", `${piKey("old-d")}.json`);
 fs.writeFileSync(recoveryFile, JSON.stringify({
-  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "session-a",
+  schema: 1, registry: "http://localhost:8000", account_id: "alice", session_id: "old-d",
   checked_at: Math.floor(Date.now() / 1000), items: [{name: "alice/code", scope: "user", status: "failed",
     current_version: "1.0", latest_version: "2.0", description: "x".repeat(3900),
     reason: "Installer failed after admission; inspect managed files before retrying."}],
@@ -112,7 +116,7 @@ assert.ok(messages.some((message) => message.includes("update failure from a pre
 assert.ok(messages.some((message) => message.includes("inspect managed files before retrying")),
   "failure notices must explain manual inspection even with long release notes");
 assert.equal(fs.existsSync(recoveryFile), false);
-const pendingKey = "f".repeat(64);
+const pendingKey = piKey("session-a");
 const pendingFile = path.join(dir, "update-notices", `${pendingKey}.pending`);
 const backupDir = path.join(dir, "update-backups", pendingKey);
 fs.mkdirSync(backupDir, {recursive: true, mode: 0o700});
@@ -153,6 +157,35 @@ await handlers.get("session_start")!({ reason: "startup" }, context("pilot-sessi
 await waitUntil(() => messages.some((message) => message.includes("installed on disk") && message.includes("Fixed bugs")));
 assert.match(fs.readFileSync(path.join(home, "worker-starts"), "utf-8"), /_startup-apply:pilot-session/);
 await handlers.get("session_shutdown")!({}, context("pilot-session", true));
+
+// Claude Code shares this directory, registry and account but uses its own key.
+// Pi must neither show nor delete another host's notice, journal or seal.
+const claudeKey = (session: string) => crypto.createHash("sha256")
+  .update(["claude-code", "http://localhost:8000", "alice", session].join("\0")).digest("hex");
+const claudeDir = path.join(dir, "update-notices");
+const claudeIdentity = { registry: "http://localhost:8000", account_id: "alice", session_id: "claude-session" };
+const claudeNotice = path.join(claudeDir, `${claudeKey("claude-session")}.json`);
+const claudeJournal = path.join(claudeDir, `${claudeKey("claude-session")}.pending`);
+const claudeSeal = path.join(claudeDir, `${claudeKey("claude-session")}.complete`);
+const orphanSeal = path.join(claudeDir, `${claudeKey("orphan-session")}.complete`);
+fs.writeFileSync(claudeNotice, JSON.stringify({schema: 1, harness: "claude-code", ...claudeIdentity,
+  journaled: true, outcome_final: true, checked_at: Math.floor(Date.now() / 1000), items: [{name: "alice/claude-agent",
+    status: "updated", current_version: "1.0", latest_version: "2.0", scope: "user"}]}), {mode: 0o600});
+fs.writeFileSync(claudeSeal, JSON.stringify({schema: 1, state: "complete", ...claudeIdentity}), {mode: 0o600});
+fs.writeFileSync(claudeJournal, JSON.stringify({schema: 1, state: "pending", ...claudeIdentity,
+  item: {name: "alice/claude-agent", current_version: "1.0", latest_version: "2.0"}}), {mode: 0o600});
+fs.writeFileSync(orphanSeal, JSON.stringify({schema: 1, state: "complete", ...claudeIdentity, session_id: "orphan-session"}),
+  {mode: 0o600});
+const beforeClaude = messages.length;
+await handlers.get("session_start")!({ reason: "resume" }, context("pi-after-claude", true));
+await sleep(150);
+assert.equal(messages.slice(beforeClaude).some((text) => text.includes("claude-agent") || text.includes("pending from a Pi session")),
+  false, "Pi must not report a Claude Code result or journal as its own");
+for (const kept of [claudeNotice, claudeJournal, claudeSeal, orphanSeal]) {
+  assert.ok(fs.existsSync(kept), `Pi must not delete another host's file: ${path.basename(kept)}`);
+}
+await handlers.get("session_shutdown")!({}, context("pi-after-claude", true));
+for (const leftover of [claudeNotice, claudeJournal, claudeSeal, orphanSeal]) fs.rmSync(leftover, { force: true });
 
 fs.rmSync(home, { recursive: true, force: true });
 console.log("startup update notices ok");

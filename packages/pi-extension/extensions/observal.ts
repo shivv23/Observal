@@ -347,6 +347,14 @@ export default function (pi: ExtensionAPI) {
     ).digest("hex");
   }
 
+  // Claude Code workers share this directory and the same registry/account but
+  // use a different key. A file belongs to this extension only if its name is the
+  // Pi key derived from its own session_id; never consume or delete another host's.
+  function ownsNoticeFile(config: ObservalConfig, fileName: string, record: any): boolean {
+    return typeof record?.session_id === "string" && record.session_id.length > 0
+      && fileName.slice(0, 64) === noticeKey(config, record.session_id);
+  }
+
   function safeNotice(value: unknown, limit = 600): string {
     return String(value ?? "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, limit);
   }
@@ -377,7 +385,13 @@ export default function (pi: ExtensionAPI) {
         const key = name.slice(0, 64);
         if (!fs.existsSync(path.join(UPDATE_NOTICE_DIR, `${key}.json`))
           && !fs.existsSync(path.join(UPDATE_NOTICE_DIR, `${key}.pending`))) {
-          fs.unlinkSync(path.join(UPDATE_NOTICE_DIR, name));
+          const sealPath = path.join(UPDATE_NOTICE_DIR, name);
+          const sealInfo = fs.lstatSync(sealPath);
+          if (!sealInfo.isFile() || sealInfo.isSymbolicLink() || sealInfo.size > UPDATE_NOTICE_MAX_BYTES) continue;
+          let seal: any;
+          try { seal = JSON.parse(fs.readFileSync(sealPath, "utf-8")); } catch { continue; }
+          if (seal?.registry === registryKey(config) && seal.account_id === config.user_id
+            && ownsNoticeFile(config, name, seal)) fs.unlinkSync(sealPath);
         }
       }
       // A write-ahead record survives a crash or a full/unwritable spool after
@@ -388,7 +402,7 @@ export default function (pi: ExtensionAPI) {
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size > UPDATE_NOTICE_MAX_BYTES) continue;
         const record = JSON.parse(fs.readFileSync(file, "utf-8"));
         if (record?.schema !== 1 || record.state !== "pending" || record.registry !== registryKey(config)
-          || record.account_id !== config.user_id) continue;
+          || record.account_id !== config.user_id || !ownsNoticeFile(config, name, record)) continue;
         if (isSealedOutcome(name.slice(0, 64), record)) continue;
         const shownKey = `${updateCheckSession}:${name}`;
         if (pendingWarningsShown.has(shownKey)) continue;
@@ -419,7 +433,8 @@ export default function (pi: ExtensionAPI) {
         }
         const notice = JSON.parse(fs.readFileSync(file, "utf-8"));
         if (notice?.schema !== 1 || notice.registry !== registryKey(config)
-          || notice.account_id !== config.user_id || !Array.isArray(notice.items)) continue;
+          || notice.account_id !== config.user_id || !Array.isArray(notice.items)
+          || !ownsNoticeFile(config, name, notice)) continue;
         if (notice.journaled === true && !isSealedOutcome(name.slice(0, 64), notice)) continue;
         const messages: string[] = [];
         if (notice.session_id !== updateCheckSession) {
