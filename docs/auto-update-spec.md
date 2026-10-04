@@ -7,6 +7,8 @@
 
 **Pi extension and hooks:** Pi has no registry-hook install path (empty event map; hook CLI is project-only), so there is nothing to auto-update there. Observal's own bundled Pi telemetry extension is refreshed at startup only after `unfreeze`, only when its manifest records a SHA-256 that matches the file on disk (older manifests, edited or foreign files stay manual via `observal doctor patch`), and takes effect on the next Pi load.
 
+**Claude Code standalone skills:** the Pi skill guard is generalized to `~/.claude/skills/<name>/` (registry-direct `SKILL.md` plus at most one already-owned script) under the cross-registry Claude install lock, with the same consent, pin, ownership, mode and conditional-recovery checks; a new session is needed to load it. Claude standalone hooks are project-scoped and Claude MCPs register via `claude mcp add` into shared config, so both stay manual until project consent and entry-level ownership exist. Claude agents with bundled components also stay manual.
+
 ## Current readiness gate
 
 The narrow Claude Code pilot is **not cleared for production-profile rollout** yet. The latest full `tests/` run after the real-registry delegation no-op hardening, with the project’s `observal-server` dependency environment and eight workers, produced **9,388 passed, 25 skipped, 4 failed**. Those four failures (delegation child cleanup and three secret-file/macOS setup tests) were previously reproduced on clean `origin/main`. An earlier four-worker run had **9,382 passed, 25 skipped, 5 failed**; its fifth ClickHouse-health mock failure is historically intermittent. No update-specific test failed. Neither run is a green full suite; check CI on its supported environment before merging. Python Ruff and Pi extension tests passed.

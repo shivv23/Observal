@@ -233,7 +233,7 @@ def _apply_serialized(
                     msg["reason"] = "This item requires a manual update in the startup pilot."
                 if (
                     enabled
-                    and item.get("type") in ({"agent", "skill", "mcp"} if harness == "pi" else {"agent"})
+                    and item.get("type") in ({"agent", "skill", "mcp"} if harness == "pi" else {"agent", "skill"})
                     and item.get("scope") == "user"
                     and item.get("release_verified")
                 ):
@@ -304,6 +304,8 @@ def _apply_serialized(
                                     "active profile are unchanged. Re-select the agent with `/agent` and reload "
                                     "to activate it."
                                     if item["type"] == "agent" and harness == "pi"
+                                    else "Saved Claude Code skill updated and verified. Start a new session to load it."
+                                    if harness == "claude-code" and item["type"] == "skill"
                                     else "Saved Pi skill updated and verified; reload Pi to use the new version."
                                     if harness == "pi" and item["type"] == "skill"
                                     else "Saved Pi MCP reference updated and verified; reload Pi to use the new version."
