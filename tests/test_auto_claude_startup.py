@@ -29,12 +29,13 @@ def instance(tmp_path: Path):
         "profile_contents": {},
         "delegation": False,
         "skill": False,
+        "drop": False,
     }
 
     def release_components(version: str) -> list[dict]:
         return (
             [{"component_type": "skill", "component_id": "s1", "resolved_version": version, "name": "review"}]
-            if state["skill"]
+            if state["skill"] and not (state["drop"] and version == "2.0.0")
             else []
         )
 
@@ -102,7 +103,7 @@ def instance(tmp_path: Path):
                     snippet["mcp_setup_commands"] = [
                         ["claude", "mcp", "add", "observal-agents", "--", sys.executable, *DELEGATION_ARGS]
                     ]
-                if state["skill"]:
+                if state["skill"] and not (state["drop"] and version == "2.0.0"):
                     snippet["skill_components"] = [
                         {
                             "id": "s1",
@@ -127,7 +128,9 @@ def instance(tmp_path: Path):
                         "lock": {
                             "status": "locked",
                             "digest": f"digest-{version}",
-                            "components": [{"type": "skill", "id": "s1", "version": version}] if state["skill"] else [],
+                            "components": [{"type": "skill", "id": "s1", "version": version}]
+                            if state["skill"] and not (state["drop"] and version == "2.0.0")
+                            else [],
                             "problems": [],
                         },
                     }
@@ -311,7 +314,6 @@ def test_existing_claude_delegation_is_a_verified_noop(instance, tamper: str | N
         "shared",
         "same-id-other-root",
         "config-dir",
-        "skill",
         "setup",
         "path",
     ],
@@ -356,7 +358,7 @@ def test_unsupported_shape_or_dirty_file_stays_manual(instance, change: str) -> 
         lock.write_text(json.dumps(body))
     elif change == "config-dir":
         env["CLAUDE_CONFIG_DIR"] = str(home / "other-claude")
-    elif change in {"skill", "setup", "path"}:
+    elif change in {"setup", "path"}:
         state["extra"] = change
     previous = file.read_bytes()
     notice = apply(change)
@@ -584,13 +586,50 @@ def test_bundled_skill_files_update_with_profile_only_when_clean(instance) -> No
     assert "2.0.0" in (home / ".claude/agents/reviewer.md").read_text()
 
 
-def test_release_that_adds_a_skill_explains_why_it_was_not_applied(instance) -> None:
-    state, _home, root, cli, apply, _env = instance
-    state["skill"] = True
+def test_release_that_adds_a_skill_creates_it_and_tracks_ownership(instance) -> None:
+    state, home, root, cli, apply, _env = instance
     seed(cli, root)
     state["latest"] = "2.0.0"
     state["extra"] = "skill"  # v2 also ships a skill the profile does not own yet
     cli("unfreeze")
     item = apply("adds-skill")["items"][0]
+    assert item["status"] == "updated", item
+    created = home / ".claude/skills/new/SKILL.md"
+    assert created.read_text() == "# skill"
+    # Ownership is recorded: the next update sees a clean, owned file set.
+    baseline = next((home / ".observal/install-baselines").glob("*.json"))
+    assert str(created) in json.loads(baseline.read_text())["files"]
+
+
+def test_added_skill_never_overwrites_an_existing_file_and_says_why(instance) -> None:
+    state, home, root, cli, apply, _env = instance
+    seed(cli, root)
+    state["latest"] = "2.0.0"
+    state["extra"] = "skill"
+    cli("unfreeze")
+    squatter = home / ".claude/skills/new/SKILL.md"
+    squatter.parent.mkdir(parents=True)
+    squatter.write_text("# someone else's skill\n")
+    item = apply("collision")["items"][0]
     assert item["status"] != "updated"
-    assert item["reason"] and "manual" in item["reason"].lower(), item
+    assert "exists" in item["reason"] or "another install" in item["reason"], item
+    assert squatter.read_text() == "# someone else's skill\n"
+    assert "1.0.0" in (home / ".claude/agents/reviewer.md").read_text()
+
+
+def test_skill_dropped_by_release_is_removed_only_when_unedited(instance) -> None:
+    state, home, root, cli, apply, _env = instance
+    state["skill"] = True
+    seed(cli, root)
+    skill = home / ".claude/skills/review/SKILL.md"
+    script = skill.parent / "scripts/run.sh"
+    state["latest"] = "2.0.0"
+    state["drop"] = True
+    cli("unfreeze")
+    skill.write_text("# my edit\n")
+    assert apply("edited-drop")["items"][0]["status"] != "updated"
+    assert skill.read_text() == "# my edit\n" and script.exists()
+    skill.write_text("# skill 1.0.0\n")
+    done = apply("clean-drop")["items"][0]
+    assert done["status"] == "updated", done.get("reason")
+    assert not skill.exists() and not script.exists()

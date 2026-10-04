@@ -11,7 +11,7 @@ import stat
 import sys
 from pathlib import Path
 
-from observal_cli import lockfile
+from observal_cli import install_baseline, lockfile
 from observal_cli.shared.utils import sanitize_name
 
 MAX_BYTES = 2 * 1024 * 1024
@@ -132,7 +132,7 @@ def plan(snippet: object, item: dict, old_files: dict[str, str]) -> tuple[dict[P
     ):
         raise ClaudePlanError("The release changes the profile path or content type; update manually.")
     from observal_cli.cmd_pull import _resolve_hook_paths
-    from observal_cli.install_recovery import atomic_text_mode
+    from observal_cli.install_recovery import atomic_text_mode, created_mode
 
     planned: dict[Path, bytes] = {file: _resolve_hook_paths(agent["content"]).encode("utf-8")}
     modes: dict[Path, int] = {file: atomic_text_mode(file.parent)}
@@ -156,7 +156,7 @@ def plan(snippet: object, item: dict, old_files: dict[str, str]) -> tuple[dict[P
             raise ClaudePlanError(str(error)) from error
         target = claude_home / "skills" / clean(name) / "SKILL.md"
         planned[target] = content.encode("utf-8")
-        modes[target] = target.stat().st_mode & 0o777 if target.is_file() else -1
+        modes[target] = target.stat().st_mode & 0o777 if target.is_file() else created_mode(claude_home)
         script, filename = component.get("script_content"), component.get("script_filename")
         if script is not None or filename is not None:
             if (
@@ -186,13 +186,27 @@ def plan(snippet: object, item: dict, old_files: dict[str, str]) -> tuple[dict[P
         if path is None or ".." in Path(raw).parts or path in planned:
             raise ClaudePlanError("A bundled hook script path needs a manual update.")
         planned[path] = hook["content"].encode("utf-8")
-        modes[path] = 0o755 if hook.get("executable") else atomic_text_mode(path.parent) if path.parent.is_dir() else -1
-    if set(map(str, planned)) != set(old_files):
-        raise ClaudePlanError("The release adds or removes owned files; update manually.")
-    if any(mode < 0 for mode in modes.values()) or any(
-        part.is_symlink() for path in planned for part in (path, *path.parents)
+        modes[path] = 0o755 if hook.get("executable") else atomic_text_mode(next(d for d in path.parents if d.is_dir()))
+    added = [path for path in planned if str(path) not in old_files]
+    try:
+        install_baseline.reject_foreign_creation(
+            added,
+            install_baseline._path(
+                lockfile.current_registry_url(), "claude-code", item["id"], "user", item["directory"]
+            ),
+        )
+    except install_baseline.BaselineError as error:
+        raise ClaudePlanError(
+            f"The release adds a file that already exists or belongs to another install: {error}"
+        ) from error
+    removed = [name for name in old_files if name not in {str(p) for p in planned} and name != str(file)]
+    if str(file) not in {str(p) for p in planned} or any(
+        not Path(name).is_relative_to(claude_home / "skills") and not Path(name).is_relative_to(claude_home / "hooks")
+        for name in removed
     ):
-        raise ClaudePlanError("A planned file is missing or crosses a link; update manually.")
-    if sum(path.stat().st_size + len(raw) for path, raw in planned.items()) > MAX_BYTES:
+        raise ClaudePlanError("The release would remove files outside its skills and hook scripts.")
+    if any(part.is_symlink() for path in planned for part in (path, *path.parents)):
+        raise ClaudePlanError("A planned file crosses a link; update manually.")
+    if sum((path.stat().st_size if path.exists() else 0) + len(raw) for path, raw in planned.items()) > MAX_BYTES:
         raise ClaudePlanError("The profile exceeds the backup size limit; update manually.")
     return planned, modes

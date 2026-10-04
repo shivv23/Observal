@@ -1912,6 +1912,12 @@ def register_pull(app: typer.Typer):
                     if result.get("warnings") or lock_warnings or conflict_warnings:
                         raise automatic_claude_plan.ClaudePlanError("The release needs manual review.")
                     planned, claude_modes = automatic_claude_plan.plan(snippet, previous, old_files)
+                added = [path for path in planned if str(path) not in old_files]
+                if added:
+                    install_baseline.reject_foreign_creation(
+                        added,
+                        install_baseline._path(current_registry_url(), harness, agent_uuid, "user", str(target_dir)),
+                    )
                 cutoff = float(os.environ.get("OBSERVAL_AUTO_UPDATE_NETWORK_CUTOFF", "inf"))
                 marker = os.environ.get("OBSERVAL_AUTO_UPDATE_SHUTDOWN_MARKER")
                 if time.monotonic() + 15 >= cutoff or (marker and Path(marker).exists()):
@@ -1923,6 +1929,10 @@ def register_pull(app: typer.Typer):
                 expected_modes = {
                     path: claude_modes[path]
                     if harness == "claude-code"
+                    else (
+                        0o755 if path.suffix in {".sh", ".bash", ".py", ".rb"} else install_recovery.created_mode(path)
+                    )
+                    if not path.exists()
                     else install_recovery.atomic_text_mode(path.parent)
                     if path.name == "AGENTS.md"
                     or (harness == "pi" and path.name == "mcp.json" and planned[path] != path.read_bytes())
@@ -1933,6 +1943,7 @@ def register_pull(app: typer.Typer):
                     else path.lstat().st_mode & 0o777
                     for path in planned
                 }
+                removed_files = [Path(name) for name in old_files if name not in {str(p) for p in planned}]
                 install_recovery.save(
                     Path(recovery),
                     planned,
@@ -1942,6 +1953,7 @@ def register_pull(app: typer.Typer):
                         install_baseline._path(current_registry_url(), harness, agent_uuid, "user", str(target_dir)),
                     ],
                     expected_modes=expected_modes,
+                    deleted=removed_files,
                 )
                 # Do not let the normal merge rewrite an identical owned MCP
                 # file. A changed, exactly planned config stays in the snippet.
@@ -2052,7 +2064,13 @@ def register_pull(app: typer.Typer):
             from observal_cli.install_baseline import BaselineError, _files
 
             try:
-                if set(_files(automatic_paths)) != set(old_files):
+                # The normal writer never deletes: remove files this release
+                # dropped (saved in the recovery backup), then require the
+                # exact planned file set before recording new ownership.
+                for gone in removed_files:
+                    gone.unlink(missing_ok=True)
+                automatic_paths = [str(path) for path in planned]
+                if set(_files(automatic_paths)) != set(automatic_paths):
                     raise BaselineError("The managed path set changed during installation")
                 if harness == "claude-code" and any(
                     path.read_bytes() != raw or path.stat().st_mode & 0o777 != expected_modes[path]
