@@ -22,7 +22,21 @@ AGENT = "11111111-1111-4111-8111-111111111111"
 
 @pytest.fixture()
 def instance(tmp_path: Path):
-    state = {"latest": "1.0.0", "extra": None, "install_calls": 0, "profile_contents": {}, "delegation": False}
+    state = {
+        "latest": "1.0.0",
+        "extra": None,
+        "install_calls": 0,
+        "profile_contents": {},
+        "delegation": False,
+        "skill": False,
+    }
+
+    def release_components(version: str) -> list[dict]:
+        return (
+            [{"component_type": "skill", "component_id": "s1", "resolved_version": version, "name": "review"}]
+            if state["skill"]
+            else []
+        )
 
     class Registry(BaseHTTPRequestHandler):
         def log_message(self, *_args: object) -> None:
@@ -57,7 +71,7 @@ def instance(tmp_path: Path):
                         "version": self.path.rsplit("/", 1)[-1],
                         "status": "approved",
                         "supported_harnesses": ["claude-code"],
-                        "components": [],
+                        "components": release_components(self.path.rsplit("/", 1)[-1]),
                     }
                 )
             self.send_error(404)
@@ -88,6 +102,16 @@ def instance(tmp_path: Path):
                     snippet["mcp_setup_commands"] = [
                         ["claude", "mcp", "add", "observal-agents", "--", sys.executable, *DELEGATION_ARGS]
                     ]
+                if state["skill"]:
+                    snippet["skill_components"] = [
+                        {
+                            "id": "s1",
+                            "name": "review",
+                            "skill_md_content": f"# skill {version}\n",
+                            "script_content": f"echo {version}\n",
+                            "script_filename": "run.sh",
+                        }
+                    ]
                 if version == "2.0.0" and state["extra"] == "skill":
                     snippet["skill_components"] = [{"name": "new", "skill_md_content": "# skill"}]
                 if version == "2.0.0" and state["extra"] == "setup":
@@ -100,7 +124,12 @@ def instance(tmp_path: Path):
                         "harness": "claude-code",
                         "version": version,
                         "config_snippet": snippet,
-                        "lock": {"status": "locked", "digest": f"digest-{version}", "components": [], "problems": []},
+                        "lock": {
+                            "status": "locked",
+                            "digest": f"digest-{version}",
+                            "components": [{"type": "skill", "id": "s1", "version": version}] if state["skill"] else [],
+                            "problems": [],
+                        },
                     }
                 )
             self.send_error(404)
@@ -531,3 +560,23 @@ def test_bedrock_session_activation_and_saved_profile_boundary(instance) -> None
         assert fresh_answer() == after, "A new Claude session did not load the selected saved v2 profile"
     finally:
         assert real_settings.read_bytes() == original, "Real Claude settings unexpectedly changed"
+
+
+def test_bundled_skill_files_update_with_profile_only_when_clean(instance) -> None:
+    state, home, root, cli, apply, _env = instance
+    state["skill"] = True
+    seed(cli, root)
+    skill = home / ".claude/skills/review/SKILL.md"
+    script = skill.parent / "scripts/run.sh"
+    assert skill.read_text() == "# skill 1.0.0\n" and script.read_text() == "echo 1.0.0\n"
+    state["latest"] = "2.0.0"
+    cli("unfreeze")
+    skill.write_text("# my edit\n")
+    assert apply("dirty")["items"][0]["status"] != "updated"
+    assert skill.read_text() == "# my edit\n"
+    skill.write_text("# skill 1.0.0\n")
+    notice = apply("clean")
+    assert notice["items"][0]["status"] == "updated", notice
+    assert skill.read_text() == "# skill 2.0.0\n" and script.read_text() == "echo 2.0.0\n"
+    assert script.stat().st_mode & 0o777 == 0o755
+    assert "2.0.0" in (home / ".claude/agents/reviewer.md").read_text()

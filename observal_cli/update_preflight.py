@@ -104,8 +104,6 @@ def _user_agent_candidate(item: dict, *, registry: str, harness: str) -> dict[st
     target = _identities(item["release"].get("components"), installed=False)
     if installed != target:
         raise PreflightSkipError("The release adds or removes components; review and pull it manually.")
-    if harness == "claude-code" and installed:
-        raise PreflightSkipError("Claude Code component installs need manual review; only a plain profile is eligible.")
     root = item.get("directory")
     if not isinstance(root, str) or not root:
         raise PreflightSkipError("The installation root is unknown; update manually.")

@@ -1911,7 +1911,7 @@ def register_pull(app: typer.Typer):
 
                     if result.get("warnings") or lock_warnings or conflict_warnings:
                         raise automatic_claude_plan.ClaudePlanError("The release needs manual review.")
-                    planned = automatic_claude_plan.plan(snippet, previous, old_files)
+                    planned, claude_modes = automatic_claude_plan.plan(snippet, previous, old_files)
                 cutoff = float(os.environ.get("OBSERVAL_AUTO_UPDATE_NETWORK_CUTOFF", "inf"))
                 marker = os.environ.get("OBSERVAL_AUTO_UPDATE_SHUTDOWN_MARKER")
                 if time.monotonic() + 15 >= cutoff or (marker and Path(marker).exists()):
@@ -1921,9 +1921,10 @@ def register_pull(app: typer.Typer):
                     raise ValueError("An automatic pull has no durable recovery directory")
                 client.end_startup_network_budget()  # No alarm may interrupt a disk write.
                 expected_modes = {
-                    path: install_recovery.atomic_text_mode(path.parent)
+                    path: claude_modes[path]
+                    if harness == "claude-code"
+                    else install_recovery.atomic_text_mode(path.parent)
                     if path.name == "AGENTS.md"
-                    or harness == "claude-code"
                     or (harness == "pi" and path.name == "mcp.json" and planned[path] != path.read_bytes())
                     else 0o755
                     if harness == "pi"
