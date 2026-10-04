@@ -291,11 +291,7 @@ def apply_startup_pi_agent(
                     "status": "skipped",
                     "reason": "The installer failed; verified original managed files were restored. Update manually.",
                 }
-        if (
-            completed.returncode == 0
-            and _verify(verified)
-            and (harness == "pi" or install_recovery.planned_matches(backup))
-        ):
+        if completed.returncode == 0 and _verify(verified) and install_recovery.planned_matches(backup):
             installed = [
                 row
                 for row in _entries(harness)
