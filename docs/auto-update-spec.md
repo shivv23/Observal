@@ -127,6 +127,36 @@ Keep the existing check, registry/account gate, bounded worker, pending notice, 
 
 For other harness startup bridges, use the existing verified surface rather than assuming all ten share Pi's UI: Claude Code's patched, consent-gated hook now runs at `SessionStart` without network work in the hook; Goose/Copilot CLI have session-start hooks, OpenCode has `session.created`, while Kiro's currently installed telemetry hooks start at prompt submission (and Codex has no verified start hook). Cursor has no declarative hook spec. Where there is no safe user-visible notification or an active profile is cached, leave notices for the next supported UI/CLI surface and say a reload/re-selection is needed. All rollout tests must run in disposable homes and exercise the host, not merely a mocked adapter.
 
+## Enumerated pilot, and what is deliberately deferred
+
+This section is the authoritative list of what the pilot updates automatically (after `observal unfreeze`, only for installs with a verified ownership baseline, known unpinned intent, and an exact approved release). Earlier prose in this document describes the order slices were built in and may be narrower; where they differ, this list wins. Everything not listed stays notice-only, with the reason shown to the user.
+
+**In the pilot (user scope; Pi and Claude Code only)**
+
+| Shape | Pi | Claude Code |
+|---|---|---|
+| Agent profile | yes | yes |
+| Agent's bundled registry-direct skills (at most one script each); skills added or dropped by a release | yes | yes |
+| Agent's bundled hook scripts | n/a | yes |
+| Agent MCPs in the agent's own isolated `mcp.json` (add, drop, re-version; plain local servers only) | yes | no (see below) |
+| Saved credentials in that `mcp.json` or a managed standalone MCP (carried forward unchanged) | yes | no |
+| Standalone registry-direct skill (`SKILL.md` and at most one owned script) | yes | yes |
+| Managed standalone MCP (`registry mcp install --managed`) | yes (whole owned file) | yes (single owned entry, credential-free) |
+| Observal's own extension / settings hooks | extension, if unedited | hook groups, if they match their recorded hashes |
+
+**Deferred, each with the gate it must meet**
+
+1. **Project scope** (separate follow-up PR). Initial gate: *untracked, baseline-owned project installs*.
+   - Consent is per canonical project directory, recorded only under `~/.observal`, never inferred from the repository or from user-level consent. Worktrees are separate directories and separate consents.
+   - Sessions started in a subdirectory resolve to the one recorded install root; ambiguous nested installs and path aliases are refused.
+   - A prior local ownership baseline is still required: untracked does not mean Observal-owned.
+   - Git tracking of every planned path and of `observal.lock` is checked at admission and again immediately before writing; if Git status cannot be established the update is refused. Tracked files and a tracked `observal.lock` stay notice-only. This is a rollout limit, not a claim that tracked installs can never be supported, and it establishes only that this automatic write is not changing something Git currently tracks.
+   - New piece: an entry-level update of our own entry in `observal.lock`, with compare-and-swap and a recovery row that restores only that entry.
+2. **Claude agent MCPs (local scope).** Claude registers a pulled agent's MCPs in `~/.claude.json` under `projects[<dir>]`, a file Claude itself rewrites and which also holds other projects' entries and credentials. They stay manual until all of the following exist: (a) the pull records the exact entries it created, so legacy unrecorded entries stay manual; (b) a verified command-effect model for `claude mcp add/remove -s local` run from the install directory; (c) serialization with manual changes, or detection that one happened; (d) a before/after comparison proving no other project's or user's entry changed; (e) a recovery journal covering multiple entries that is joined to the agent's file journal and re-adds only our entries, never restoring file bytes; and (f) an explicit statement of the window between `remove` and `add`. Credential-bearing entries stay manual.
+3. **Credential-bearing Claude MCPs.** Claude's generated command cannot carry values Observal can verify without storing them.
+4. **The other eight harnesses.** One at a time, each needing a verified startup surface, an exact plan, and a real host test.
+5. **Tracked project installs, standalone project skills, MCPs and hooks, and other pasted or unmanaged config.**
+
 ### Explicit out-of-scope items
 
 Observal CLI self-upgrade (`observal self`), server upgrades, unmanaged harness resources, retroactively changing an agent release's component pins, auto-enabling new components for an agent not previously installed, Pi skill-location collisions/frontmatter repair, and background update daemons independent of a harness session.
