@@ -1707,6 +1707,12 @@ def register_pull(app: typer.Typer):
             missing_inputs=missing_inputs,
         )
         if missing_inputs:
+            from observal_cli.auto_update_policy import record_skip_reason
+
+            record_skip_reason(
+                "The release needs credentials or other values only you can enter; "
+                "run `observal agent pull` manually to provide them."
+            )
             fail(
                 ErrorCategory.VALIDATION,
                 "Agent installation requires values that are unavailable in non-interactive mode.",
@@ -2071,6 +2077,12 @@ def register_pull(app: typer.Typer):
                 # exact planned file set before recording new ownership.
                 for gone in removed_files:
                     gone.unlink(missing_ok=True)
+                if harness == "pi":
+                    # The normal writer merges MCP entries and never drops one.
+                    # The plan holds the release's exact server set.
+                    for path, raw in planned.items():
+                        if path.name == "mcp.json" and path.read_bytes() != raw:
+                            _atomic_write_text(path, raw.decode("utf-8"))
                 automatic_paths = [str(path) for path in planned]
                 if set(_files(automatic_paths)) != set(automatic_paths):
                     raise BaselineError("The managed path set changed during installation")

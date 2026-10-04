@@ -61,7 +61,7 @@ def test_startup_plan_reuses_only_existing_profile_and_plain_skills(
     with pytest.raises(plan.InstallSkipError):
         plan.plan_pi_files(outside, item, previous)
     # Removing the profile itself is never allowed; removing a skill file is.
-    assert profile not in plan.plan_pi_files({**valid, "skill_components": []}, item, previous) or True
+    assert profile in plan.plan_pi_files({**valid, "skill_components": []}, item, previous)
     with pytest.raises(plan.InstallSkipError):
         plan.plan_pi_files(
             {"agent_profile": valid["agent_profile"], "skill_components": []},
@@ -91,6 +91,7 @@ def test_startup_plan_reuses_only_existing_profile_and_plain_skills(
     # The deployed server adds a delegation MCP to every Pi install.
     # An unchanged owned mcp.json is a verified no-op; changed existing
     # entries get the normal writer's exact merged bytes.
+    item = {**item, "id": "agent-1"}
     mcp = root / "mcp.json"
     delegation = {"mcpServers": {"observal-agents": {"command": "/tmp/python", "args": []}}}
     mcp.write_text(json.dumps(delegation, indent=2) + "\n")
@@ -115,8 +116,41 @@ def test_startup_plan_reuses_only_existing_profile_and_plain_skills(
         plan.plan_pi_files({**valid, "mcp_config": {"path": str(mcp), "content": updated}}, item, previous)[mcp]
         == (json.dumps(updated, indent=2) + "\n").encode()
     )
+    # A release may add a plain local MCP, or drop one the agent owned.
+    plain = {"command": "/tmp/new-mcp", "args": ["--serve"], "env": {"OBSERVAL_AGENT_ID": item["id"]}}
+    grown = {"mcpServers": {**updated["mcpServers"], "extra": plain}}
+    assert (
+        plan.plan_pi_files({**valid, "mcp_config": {"path": str(mcp), "content": grown}}, item, previous)[mcp]
+        == (json.dumps(grown, indent=2) + "\n").encode()
+    )
+    shrunk = {"mcpServers": dict(delegation["mcpServers"])}
+    assert (
+        plan.plan_pi_files({**valid, "mcp_config": {"path": str(mcp), "content": shrunk}}, item, previous)[mcp]
+        == (json.dumps(shrunk, indent=2) + "\n").encode()
+    )
+    # New entries that need credentials, a URL or an env value stay manual.
+    for risky in (
+        {"command": "x", "env": {"TOKEN": "${TOKEN}"}},
+        {"command": "x", "env": {"OBSERVAL_AGENT_ID": "someone-else"}},
+        {"command": "x", "args": ["--key=$KEY"]},
+        {"url": "https://example.test/mcp"},
+        {"command": "x", "headers": {"a": "b"}},
+    ):
+        with pytest.raises(plan.InstallSkipError, match="needs credentials"):
+            plan.plan_pi_files(
+                {
+                    **valid,
+                    "mcp_config": {"path": str(mcp), "content": {"mcpServers": {**owned["mcpServers"], "bad": risky}}},
+                },
+                item,
+                previous,
+            )
+    # Dropping every MCP deletes the file only while it is unedited.
+    assert mcp not in plan.plan_pi_files(valid, item, previous)
     mcp.write_text(json.dumps({"mcpServers": {"observal-agents": {}, "other": {}}}))
-    with pytest.raises(plan.InstallSkipError):
+    with pytest.raises(plan.InstallSkipError, match="edited"):
+        plan.plan_pi_files(valid, item, previous)
+    with pytest.raises(plan.InstallSkipError, match="edited"):
         plan.plan_pi_files(same, item, previous)
     profile.write_text("locally edited")
     # The plan alone is not an ownership check: verified_files in the normal
