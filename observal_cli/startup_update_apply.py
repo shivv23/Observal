@@ -140,6 +140,19 @@ def apply_pi(cwd: str, session_id: str, notice_key: str) -> None:
         client.bounded_requests(deadline - RECOVERY_RESERVE_SECONDS),
     ):
         _apply_serialized(cwd, session_id, notice_key, registry=registry, account=account, deadline=deadline)
+        _refresh_extension(registry)
+
+
+def _refresh_extension(registry: str) -> None:
+    """Refresh Observal's own Pi extension for the next load; consent-gated, best effort."""
+    from observal_cli import pi_extension
+
+    try:
+        with auto_update_policy.registry_gate(registry, timeout=2):
+            if auto_update_policy.policy_status(registry)["effective"]:
+                pi_extension.refresh_unedited()
+    except Exception:
+        pass  # A bundled-extension refresh must never fail the update worker.
 
 
 def apply_claude(cwd: str, session_id: str, notice_key: str) -> None:
