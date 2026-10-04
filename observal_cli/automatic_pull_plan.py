@@ -51,6 +51,25 @@ def _credential_free(entry: object, agent_id: object) -> bool:
     )
 
 
+def _same_credentials(key: str, old: object, new: object, agent_id: object) -> None:
+    """A kept MCP may only carry forward the secrets the user already saved."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        raise InstallSkipError(f"The MCP '{key}' has an unsupported saved entry; update manually.")
+    for field in ("env", "headers"):
+        previous, current = old.get(field) or {}, new.get(field) or {}
+        if not isinstance(previous, dict) or not isinstance(current, dict):
+            raise InstallSkipError(f"The MCP '{key}' has an unsupported {field} block; update manually.")
+        for name, value in current.items():
+            if field == "env" and name == "OBSERVAL_AGENT_ID":
+                if value != agent_id:
+                    raise InstallSkipError(f"The MCP '{key}' names a different agent; update manually.")
+            elif value != "" and previous.get(name) != value:
+                raise InstallSkipError(
+                    f"The release changes a saved value or adds a new one for MCP '{key}' ({field} '{name}'); "
+                    "run `observal agent pull` manually to review it."
+                )
+
+
 def plan_pi_files(snippet: object, item: dict, old_files: dict[str, str]) -> dict[Path, bytes]:
     """Compute the complete *file* plan before any mutation.
 
@@ -105,6 +124,8 @@ def plan_pi_files(snippet: object, item: dict, old_files: dict[str, str]) -> dic
             ):
                 raise InstallSkipError("The Pi MCP config was edited since Observal wrote it; update manually.")
             current = current_mcp["mcpServers"]
+        for key in set(wanted) & set(current):
+            _same_credentials(key, current[key], wanted[key], item.get("id"))
         for key in set(wanted) - set(current):
             if not _credential_free(wanted[key], item.get("id")):
                 raise InstallSkipError(

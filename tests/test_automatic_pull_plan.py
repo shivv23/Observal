@@ -145,6 +145,31 @@ def test_startup_plan_reuses_only_existing_profile_and_plain_skills(
                 item,
                 previous,
             )
+    # Saved credentials are carried forward unchanged; anything else is manual.
+    secret_old = {
+        "mcpServers": {**delegation["mcpServers"], "api": {"command": "/tmp/api-v1", "env": {"KEY": "s3cret"}}}
+    }
+    mcp.write_text(json.dumps(secret_old, indent=2) + "\n")
+    previous[str(mcp)] = hashlib.sha256(mcp.read_bytes()).hexdigest()
+
+    def release(entry: dict) -> dict:
+        content = {"mcpServers": {**delegation["mcpServers"], "api": entry}}
+        return {**valid, "mcp_config": {"path": str(mcp), "content": content}}
+
+    kept = {"command": "/tmp/api-v2", "env": {"KEY": "s3cret", "OBSERVAL_AGENT_ID": "agent-1"}}
+    assert json.loads(plan.plan_pi_files(release(kept), item, previous)[mcp])["mcpServers"]["api"] == kept
+    for bad in (
+        {"command": "/tmp/api-v2", "env": {"KEY": "different"}},
+        {"command": "/tmp/api-v2", "env": {"KEY": "s3cret", "NEW": "value"}},
+        {"command": "/tmp/api-v2", "env": {"KEY": "s3cret"}, "headers": {"Authorization": "Bearer x"}},
+        {"command": "/tmp/api-v2", "env": {"OBSERVAL_AGENT_ID": "someone-else"}},
+    ):
+        with pytest.raises(plan.InstallSkipError):
+            plan.plan_pi_files(release(bad), item, previous)
+    # An empty placeholder (an optional value the user skipped) is not a credential.
+    assert plan.plan_pi_files(release({"command": "/tmp/api-v2", "env": {"KEY": "s3cret", "OPT": ""}}), item, previous)
+    mcp.write_text(json.dumps(owned, indent=2) + "\n")
+    previous[str(mcp)] = hashlib.sha256(mcp.read_bytes()).hexdigest()
     # Dropping every MCP deletes the file only while it is unedited.
     assert mcp not in plan.plan_pi_files(valid, item, previous)
     mcp.write_text(json.dumps({"mcpServers": {"observal-agents": {}, "other": {}}}))
