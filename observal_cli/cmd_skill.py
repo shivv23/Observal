@@ -817,6 +817,10 @@ def skill_install(
                 expected_modes=modes,
             )
         except (OSError, ValueError, KeyError, TypeError) as error:
+            if isinstance(error, ValueError) and not isinstance(error, OSError):
+                from observal_cli.auto_update_policy import record_skip_reason
+
+                record_skip_reason(str(error))
             fail(
                 ErrorCategory.CONFLICT,
                 "The Pi skill cannot be updated automatically.",

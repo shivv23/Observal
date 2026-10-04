@@ -287,6 +287,9 @@ def _apply_serialized(
                                 "mcp": cmd_update.apply_startup_pi_mcp,
                             }[item["type"]]
                             kwargs = {"harness": harness} if harness == "claude-code" else {}
+                            reason_file = marker.with_suffix(".reason")
+                            reason_file.unlink(missing_ok=True)
+                            os.environ["OBSERVAL_AUTO_UPDATE_REASON_FILE"] = str(reason_file)
                             result = runner(
                                 {**current[0], "latest_version": item["latest_version"]},
                                 registry=registry,
@@ -298,6 +301,10 @@ def _apply_serialized(
                             )
                             msg["status"] = result["status"]
                             msg["reason"] = result["reason"]
+                            specific = auto_update_policy.read_skip_reason(reason_file)
+                            if specific and msg["status"] == "skipped":
+                                msg["reason"] = f"{specific} (update manually)"
+                            reason_file.unlink(missing_ok=True)
                             if msg["status"] == "updated":
                                 msg["reason"] = (
                                     "Saved Pi profile updated and verified; the current session and any copied "

@@ -572,7 +572,9 @@ def test_bundled_skill_files_update_with_profile_only_when_clean(instance) -> No
     state["latest"] = "2.0.0"
     cli("unfreeze")
     skill.write_text("# my edit\n")
-    assert apply("dirty")["items"][0]["status"] != "updated"
+    dirty = apply("dirty")["items"][0]
+    assert dirty["status"] != "updated"
+    assert "changed" in dirty["reason"], dirty
     assert skill.read_text() == "# my edit\n"
     skill.write_text("# skill 1.0.0\n")
     notice = apply("clean")
@@ -580,3 +582,15 @@ def test_bundled_skill_files_update_with_profile_only_when_clean(instance) -> No
     assert skill.read_text() == "# skill 2.0.0\n" and script.read_text() == "echo 2.0.0\n"
     assert script.stat().st_mode & 0o777 == 0o755
     assert "2.0.0" in (home / ".claude/agents/reviewer.md").read_text()
+
+
+def test_release_that_adds_a_skill_explains_why_it_was_not_applied(instance) -> None:
+    state, _home, root, cli, apply, _env = instance
+    state["skill"] = True
+    seed(cli, root)
+    state["latest"] = "2.0.0"
+    state["extra"] = "skill"  # v2 also ships a skill the profile does not own yet
+    cli("unfreeze")
+    item = apply("adds-skill")["items"][0]
+    assert item["status"] != "updated"
+    assert item["reason"] and "manual" in item["reason"].lower(), item

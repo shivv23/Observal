@@ -1956,6 +1956,10 @@ def register_pull(app: typer.Typer):
                     snippet.pop("mcp_config", None)
                     snippet.pop("mcp_setup_commands", None)
             except (OSError, ValueError, KeyError, TypeError) as error:
+                if isinstance(error, ValueError) and not isinstance(error, OSError):
+                    from observal_cli.auto_update_policy import record_skip_reason
+
+                    record_skip_reason(str(error))
                 fail(
                     ErrorCategory.CONFLICT,
                     "The managed files changed or this release needs a manual pull.",
