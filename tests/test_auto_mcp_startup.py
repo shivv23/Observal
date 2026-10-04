@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -299,10 +300,15 @@ def claude_instance(instance):
     state, home, cli, apply, env = instance
     bin_dir = home / "bin"
     bin_dir.mkdir()
-    shim = bin_dir / "claude"
-    shim.write_text(SHIM.format(python=sys.executable))
-    shim.chmod(0o755)
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    if os.getenv("OBSERVAL_RUN_LIVE_CLAUDE_CLI") == "1":
+        real = shutil.which("claude")  # The real CLI, still confined to the disposable HOME.
+        assert real, "claude is not installed"
+        env["PATH"] = f"{Path(real).parent}{os.pathsep}{env['PATH']}"
+    else:
+        shim = bin_dir / "claude"
+        shim.write_text(SHIM.format(python=sys.executable))
+        shim.chmod(0o755)
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
     url = json.loads((home / ".observal/config.json").read_text())["server_url"]
 
     def apply_claude(session: str) -> dict:
@@ -355,6 +361,7 @@ def test_claude_mcp_edited_by_user_is_not_replaced_and_says_why(claude_instance)
     assert json.loads(config.read_text())["mcpServers"][name]["command"] == "/my/own/build"
 
 
+@pytest.mark.skipif(os.getenv("OBSERVAL_RUN_LIVE_CLAUDE_CLI") == "1", reason="failure injection needs the shim")
 def test_claude_mcp_add_failure_after_remove_restores_the_original(claude_instance) -> None:
     state, home, cli, apply, env = claude_instance
     config = home / ".claude.json"
